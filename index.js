@@ -35,8 +35,8 @@ app.get('/api/buscar', async (req, res) => {
   }
 });
 
-// 3. ENDPOINT DE EXTRACCIÓN (El núcleo pesado: yt-dlp puro)
-app.get('/api/stream', (req, res) => {
+// 3. ENDPOINT DE EXTRACCIÓN (Blindado contra colapsos)
+app.get('/api/stream', async (req, res) => {
   const videoUrl = req.query.url;
 
   if (!videoUrl || videoUrl === 'undefined' || !videoUrl.startsWith('http')) {
@@ -45,26 +45,35 @@ app.get('/api/stream', (req, res) => {
 
   console.log(`[Stream] Extrayendo audio con yt-dlp para: ${videoUrl}`);
 
-  // Le decimos al celular que viene un flujo multimedia crudo
   res.setHeader('Content-Type', 'audio/mp4'); 
   res.setHeader('Transfer-Encoding', 'chunked');
 
-  // Ejecutamos yt-dlp y capturamos el audio original
-  const subprocess = youtubedl.exec(videoUrl, {
-    format: 'bestaudio', // Trae el audio de mayor calidad sin gastar tiempo en conversiones
-    output: '-',         // Símbolo mágico: Manda el archivo al stdout (consola) en lugar del disco duro
-  }, { stdio: ['ignore', 'pipe', 'ignore'] });
+  try {
+    // Cambiamos el ignore por 'pipe' en el stderr para poder LEER el error de YouTube
+    const subprocess = youtubedl.exec(videoUrl, {
+      format: 'bestaudio',
+      output: '-',
+      noWarnings: true,
+      noCallHome: true
+    }, { stdio: ['ignore', 'pipe', 'pipe'] });
 
-  // Conectamos la salida de yt-dlp directamente a la respuesta del cliente
-  subprocess.stdout.pipe(res);
+    // Conectamos el audio al cliente
+    subprocess.stdout.pipe(res);
 
-  // Manejo de errores si el video está bloqueado globalmente
-  subprocess.on('error', (error) => {
-    console.error('Error interno de yt-dlp:', error.message);
+    // Capturamos la verdadera razón del bloqueo y la imprimimos en Render
+    subprocess.stderr.on('data', (data) => {
+      console.error(`[yt-dlp ERROR REAL]: ${data.toString()}`);
+    });
+
+    // Obligamos a Node.js a esperar y atrapar cualquier colapso de yt-dlp
+    await subprocess;
+
+  } catch (error) {
+    console.error('[Protección] yt-dlp falló, pero el servidor sigue vivo.');
     if (!res.headersSent) {
-      res.status(500).json({ error: 'No se pudo procesar el audio del video.' });
+      res.status(500).json({ error: 'YouTube bloqueó la descarga en el servidor.' });
     }
-  });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
