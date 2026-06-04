@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const ytSearch = require('yt-search');
-const youtubedl = require('youtube-dl-exec');
+const ytSearch = require('yt-search'); // Mantenemos yt-search porque busca rapidísimo sin bloqueos
 
 const app = express();
 app.use(cors());
@@ -9,21 +8,20 @@ app.use(express.json());
 
 // 1. ENDPOINT DE PRUEBA
 app.get('/', (req, res) => {
-  res.json({ mensaje: '🎶 Backend de Nexus Music con yt-dlp funcionando!' });
+  res.json({ mensaje: '🎶 Backend de Nexus Music (Modo Proxy) funcionando!' });
 });
 
-// 2. ENDPOINT DE BÚSQUEDA (Scraping rápido, sin cuotas ni API Keys)
+// 2. ENDPOINT DE BÚSQUEDA
 app.get('/api/buscar', async (req, res) => {
   try {
     const query = req.query.q;
-    if (!query) return res.status(400).json({ error: 'Falta el parámetro de búsqueda (q)' });
+    if (!query) return res.status(400).json({ error: 'Falta el parámetro de búsqueda' });
 
     const resultados = await ytSearch(query);
-    
     const dataLimpia = resultados.videos.slice(0, 20).map(video => ({
       id: video.videoId,
       title: video.title,
-      duration: video.timestamp, // Formato "3:45"
+      duration: video.timestamp,
       url: video.url,
       thumbnail: video.thumbnail
     }));
@@ -35,7 +33,7 @@ app.get('/api/buscar', async (req, res) => {
   }
 });
 
-// 3. ENDPOINT DE EXTRACCIÓN (Blindado contra colapsos)
+// 3. ENDPOINT DE EXTRACCIÓN (El Matchmaker Definitivo)
 app.get('/api/stream', async (req, res) => {
   const videoUrl = req.query.url;
 
@@ -43,40 +41,60 @@ app.get('/api/stream', async (req, res) => {
     return res.status(400).json({ error: 'La URL proporcionada no es válida.' });
   }
 
-  console.log(`[Stream] Extrayendo audio con yt-dlp para: ${videoUrl}`);
-
-  res.setHeader('Content-Type', 'audio/mp4'); 
-  res.setHeader('Transfer-Encoding', 'chunked');
+  console.log(`[Stream] Buscando ruta segura de audio para: ${videoUrl}`);
 
   try {
-    // Cambiamos el ignore por 'pipe' en el stderr para poder LEER el error de YouTube
-    const subprocess = youtubedl.exec(videoUrl, {
-      format: 'bestaudio',
-      output: '-',
-      noWarnings: true,
-      noCallHome: true
-    }, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Extraemos el ID
+    let videoId = '';
+    const u = new URL(videoUrl);
+    if (u.hostname.includes('youtu.be')) {
+      videoId = u.pathname.slice(1);
+    } else {
+      videoId = u.searchParams.get('v');
+    }
 
-    // Conectamos el audio al cliente
-    subprocess.stdout.pipe(res);
+    // Matriz de servidores comunitarios (Inmunes a Bots)
+    const servidores = [
+      'https://pipedapi.tokhmi.xyz',
+      'https://pipedapi.syncpundit.io',
+      'https://piped-api.garudalinux.org',
+      'https://pipedapi.kavin.rocks'
+    ];
 
-    // Capturamos la verdadera razón del bloqueo y la imprimimos en Render
-    subprocess.stderr.on('data', (data) => {
-      console.error(`[yt-dlp ERROR REAL]: ${data.toString()}`);
-    });
+    for (const base of servidores) {
+      try {
+        console.log(`Probando enlace con: ${base}...`);
+        
+        // Al usar fetch en Node.js, ignoramos todas las reglas molestas de CORS del celular
+        const response = await fetch(`${base}/streams/${videoId}`);
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.audioStreams && data.audioStreams.length > 0) {
+            const stream = data.audioStreams.find(s => s.mimeType.includes('m4a') || s.mimeType.includes('mp4')) || data.audioStreams[0];
+            
+            console.log(`¡Éxito! Redirigiendo el celular al audio...`);
+            
+            // LA MAGIA HTTP 302:
+            // Le decimos al reproductor de tu celular: "El audio no está en Render, está en esta URL segura, ¡ve a buscarlo ahí!"
+            // El celular (<audio> y el Descargador) seguirán la redirección de forma automática y transparente.
+            return res.redirect(302, stream.url);
+          }
+        }
+      } catch (e) {
+        console.log(`Falló ${base}, saltando al siguiente...`);
+      }
+    }
 
-    // Obligamos a Node.js a esperar y atrapar cualquier colapso de yt-dlp
-    await subprocess;
+    throw new Error('Todos los espejos fallaron.');
 
   } catch (error) {
-    console.error('[Protección] yt-dlp falló, pero el servidor sigue vivo.');
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'YouTube bloqueó la descarga en el servidor.' });
-    }
+    console.error('[Error] No se pudo obtener el audio:', error.message);
+    res.status(500).json({ error: 'Error al conectar con los servidores de música.' });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Servidor encendido en el puerto ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Servidor proxy encendido en el puerto ${PORT}`);
 });
